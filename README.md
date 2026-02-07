@@ -1,12 +1,13 @@
-# NVIDIA Jetson Orin Nano (Super Dev Kit)  
-# Clean Setup Guide (JetPack 6.2.2)
+# NVIDIA Jetson Orin Nano (Super Dev Kit) — Clean Setup Guide (JetPack 6.2.2)
 
 A clean, repeatable setup for the **NVIDIA Jetson Orin Nano Super Developer Kit**, optimized for:
 
 - Maximum performance mode
-- Remote access (VNC)
+- Remote access (VNC) using **TigerVNC** (virtual desktop; works great headless)
 - Development readiness (SSH, useful tools)
 - A “restore point” snapshot
+
+> This guide intentionally uses **TigerVNC** instead of x11vnc. TigerVNC runs a dedicated virtual desktop at a fixed resolution, so you don’t need a monitor (or a dummy plug) to get a large remote screen.
 
 ---
 
@@ -23,7 +24,7 @@ A clean, repeatable setup for the **NVIDIA Jetson Orin Nano Super Developer Kit*
 - NVIDIA Jetson Orin Nano Super Developer Kit: https://amzn.to/4kkrEpl  
 - microSD Card (**256GB recommended**): https://amzn.to/3MeFRr2  
 - DisplayPort to HDMI Adapter: https://amzn.to/4rxEpPs  
-- HDMI Monitor  
+- HDMI Monitor (for initial setup only)  
 - USB Keyboard  
 - USB Mouse  
 
@@ -67,8 +68,6 @@ A clean, repeatable setup for the **NVIDIA Jetson Orin Nano Super Developer Kit*
 ```bash
 ssh <username>@<ip-address>
 ```
-
-Tip: if you prefer stable hostnames, reserve the Jetson IP in your router’s DHCP settings.
 
 ---
 
@@ -126,7 +125,7 @@ sudo snap install chromium
 
 ## Step 7 — Switch Desktop from GNOME to XFCE
 
-XFCE is lighter, faster, and works better with VNC.
+XFCE is lighter, faster, and works well for remote desktop.
 
 ### Install XFCE + LightDM
 
@@ -154,59 +153,96 @@ sudo dpkg-reconfigure lightdm
 
 ---
 
-## Step 8 — Install and Configure VNC (x11vnc)
+## Step 8 — Install and Configure VNC (TigerVNC)
 
-### Install x11vnc
+TigerVNC provides a dedicated virtual desktop session at a fixed resolution (recommended for headless use).
+
+### 8.1 Install TigerVNC
 
 ```bash
 sudo apt update
-sudo apt install -y x11vnc
+sudo apt install -y tigervnc-standalone-server tigervnc-common
 ```
 
-### Set a VNC password
+### 8.2 Set your VNC password (run as your normal user)
 
 ```bash
-sudo x11vnc -storepasswd
+vncpasswd
 ```
 
-### Create a systemd service
+### 8.3 Configure VNC to start XFCE
 
-Replace `<YOUR_USERNAME>` with your Linux username.
+Create `~/.vnc/xstartup` (known-good, won’t exit early):
 
 ```bash
-sudo tee /etc/systemd/system/x11vnc.service > /dev/null <<'EOF'
+mkdir -p ~/.vnc
+cat > ~/.vnc/xstartup <<'EOF'
+#!/bin/sh
+# Ignore missing Xresources (common on minimal installs)
+xrdb "$HOME/.Xresources" 2>/dev/null || true
+
+# Start XFCE session for the VNC desktop
+startxfce4
+EOF
+chmod +x ~/.vnc/xstartup
+```
+
+### 8.4 Start TigerVNC (choose your resolution)
+
+Example (recommended for large monitors):
+
+```bash
+vncserver :1 -geometry 2560x1440 -localhost no
+```
+
+Connect your VNC client to:
+- `JETSON_IP:5901` (display `:1` → port `5900 + 1`)
+
+To stop:
+
+```bash
+vncserver -kill :1
+```
+
+### 8.5 Auto-start TigerVNC at boot (systemd user service)
+
+Create the service:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/vncserver@:1.service <<'EOF'
 [Unit]
-Description=x11vnc remote desktop
-After=display-manager.service
+Description=TigerVNC server on display %i
+After=network.target
 
 [Service]
-Type=simple
-ExecStart=/usr/bin/x11vnc -display :0 -auth /var/run/lightdm/root/:0 \
-  -rfbauth /home/<YOUR_USERNAME>/.vnc/passwd \
-  -forever -shared -noxdamage -rfbport 5900 -o /var/log/x11vnc.log
+Type=forking
+ExecStart=/usr/bin/vncserver %i -geometry 2560x1440 -localhost no
+ExecStop=/usr/bin/vncserver -kill %i
 Restart=on-failure
 RestartSec=2
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 EOF
 ```
 
-### Enable and start
+Enable it and allow it to run after reboot:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable x11vnc
-sudo systemctl start x11vnc
-sudo systemctl status x11vnc --no-pager
+systemctl --user daemon-reload
+systemctl --user enable --now vncserver@:1.service
+sudo loginctl enable-linger $USER
 ```
 
-### Open firewall port
+### 8.6 Firewall
 
 ```bash
-sudo ufw allow 5900/tcp
+sudo ufw allow 5901/tcp
 sudo ufw status
 ```
+
+> Security note: If possible, prefer an SSH tunnel instead of opening VNC ports. (See TROUBLESHOOT.md.)
 
 ---
 
@@ -228,7 +264,7 @@ You now have:
 - JetPack 6.2.2 installed
 - Maximum performance mode enabled
 - XFCE lightweight desktop
-- Reliable VNC access (x11vnc)
+- Reliable headless VNC access (TigerVNC)
 - Chromium working
 - Snapshot backup ready
 
@@ -237,4 +273,3 @@ You now have:
 ## Troubleshooting
 
 See `TROUBLESHOOT.md`.
-
