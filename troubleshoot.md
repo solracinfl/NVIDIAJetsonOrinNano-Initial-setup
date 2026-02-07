@@ -1,6 +1,6 @@
 # Troubleshooting — Jetson Orin Nano Clean Setup (JetPack 6.2.2)
 
-This file covers common problems when setting up **SSH**, **Chromium**, **XFCE**, and **VNC (x11vnc)**.
+This file covers common problems when setting up **SSH**, **Chromium**, **XFCE**, and **VNC (TigerVNC)**.
 
 ---
 
@@ -30,22 +30,6 @@ sudo systemctl status ssh --no-pager
 sudo ss -tulpn | grep :22
 ```
 
-- Ensure your Mac and Jetson are on the same network.
-
-### "Permission denied (publickey)" / password issues
-
-- Use verbose mode to see what key is being offered:
-
-```bash
-ssh -v <username>@<ip-address>
-```
-
-- Copy your key to the Jetson:
-
-```bash
-ssh-copy-id <username>@<ip-address>
-```
-
 ---
 
 ## Performance Mode (nvpmodel)
@@ -60,15 +44,6 @@ sudo apt install -y nvpmodel
 ```
 
 If that package doesn’t exist, your JetPack install may be incomplete.
-
-### Performance mode doesn’t persist
-
-Re-apply after reboot:
-
-```bash
-sudo nvpmodel -m 2
-sudo nvpmodel -q --verbose
-```
 
 ---
 
@@ -89,19 +64,6 @@ sudo snap refresh --time
 sudo snap install chromium
 ```
 
-### Snap is broken or stuck
-
-Try repairing snapd:
-
-```bash
-sudo snap remove chromium || true
-sudo snap remove snapd || true
-sudo apt -y install snapd
-sudo reboot
-```
-
-Then repeat the snapd downgrade steps from the README.
-
 ---
 
 ## XFCE / Login Issues
@@ -115,80 +77,111 @@ sudo dpkg-reconfigure lightdm
 sudo reboot
 ```
 
-### Black screen after switching display managers
-
-Reconnect a monitor temporarily and check LightDM:
-
-```bash
-systemctl status lightdm --no-pager
-```
-
-If LightDM isn’t running:
-
-```bash
-sudo systemctl enable --now lightdm
-sudo reboot
-```
-
 ---
 
-## VNC (x11vnc) Issues
+## TigerVNC Issues
 
-### VNC connects but shows a black screen
+### VNC starts then immediately stops / connection refused
 
-- x11vnc mirrors the physical desktop session `:0`. Make sure a user is logged in.
-- Confirm LightDM auth path is correct in the service:
-  - `-display :0`
-  - `-auth /var/run/lightdm/root/:0`
+If your VNC client says "refused" but you can SSH, the VNC server likely started and then exited. This is commonly caused by `~/.vnc/xstartup` exiting too early.
 
-Check log:
+If the server stays running but you only see a gray/blank desktop, it’s still usually an `xstartup` issue—apply the `xstartup` fix below and restart the server.
 
-```bash
-sudo tail -n 200 /var/log/x11vnc.log
-```
-
-### x11vnc service won’t start
+1) Check the log:
 
 ```bash
-sudo systemctl status x11vnc --no-pager
-sudo journalctl -u x11vnc -n 200 --no-pager
+ls -la ~/.vnc
+# replace host/port in filename as needed
+tail -n 200 ~/.vnc/*.log
 ```
 
-Common causes:
-- Wrong username in `-rfbauth /home/<YOUR_USERNAME>/.vnc/passwd`
-- Password file missing (re-run):
+2) Install required packages (usually already installed, but safe):
 
 ```bash
-sudo x11vnc -storepasswd
+sudo apt install -y dbus-x11 xfce4 xfce4-goodies
 ```
 
-### Port 5900 not reachable
-
-- Verify it’s listening:
+3) Use this known-good `~/.vnc/xstartup`:
 
 ```bash
-sudo ss -tulpn | grep :5900
+cat > ~/.vnc/xstartup <<'EOF'
+#!/bin/sh
+xrdb "$HOME/.Xresources" 2>/dev/null || true
+startxfce4
+EOF
+chmod +x ~/.vnc/xstartup
 ```
 
-- Verify firewall:
+4) Restart the server cleanly:
+
+```bash
+vncserver -kill :1 || true
+vncserver :1 -geometry 2560x1440 -localhost no
+```
+
+### Can’t connect to 5901
+
+- Confirm TigerVNC is running:
+
+```bash
+vncserver -list
+```
+
+- Confirm the port is listening:
+
+```bash
+sudo ss -tulpn | grep :5901
+```
+
+- Confirm firewall:
 
 ```bash
 sudo ufw status
-sudo ufw allow 5900/tcp
+sudo ufw allow 5901/tcp
 ```
 
----
+### TigerVNC starts, but you want a different resolution
 
-## Timeshift Snapshot Issues
-
-### Timeshift UI won’t open (headless)
-
-CLI still works:
+Stop it and restart with a different geometry:
 
 ```bash
-sudo timeshift --create --comments "Base-Clean-Setup"
-sudo timeshift --list
+vncserver -kill :1
+vncserver :1 -geometry 1920x1080 -localhost no
 ```
+
+### systemd user service doesn’t start on boot
+
+1) Enable lingering:
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
+2) Check service status:
+
+```bash
+systemctl --user status vncserver@:1.service --no-pager
+journalctl --user -u vncserver@:1.service -n 200 --no-pager
+```
+
+### Security: Avoid exposing VNC to the internet
+
+Best practice is to keep VNC bound to localhost and use an SSH tunnel:
+
+On the Jetson, start VNC with localhost only:
+
+```bash
+vncserver :1 -geometry 2560x1440 -localhost yes
+```
+
+On your Mac, tunnel it:
+
+```bash
+ssh -L 5901:localhost:5901 <username>@<jetson-ip>
+```
+
+Then connect your VNC client to:
+- `localhost:5901`
 
 ---
 
@@ -199,8 +192,9 @@ uname -a
 lsb_release -a || cat /etc/os-release
 hostname -I
 sudo systemctl status ssh --no-pager
-sudo systemctl status x11vnc --no-pager
-sudo journalctl -u x11vnc -n 80 --no-pager
+vncserver -list
+systemctl --user status vncserver@:1.service --no-pager
+sudo ss -tulpn | egrep ':22|:5901' || true
 sudo nvpmodel -q --verbose
 aplay -l
 arecord -l
