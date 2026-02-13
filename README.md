@@ -1,275 +1,270 @@
-# NVIDIA Jetson Orin Nano (Super Dev Kit) — Clean Setup Guide (JetPack 6.2.2)
+# Jetson Orin Nano Super (JetPack 6.x) — Ubuntu + XFCE + Persistent VNC + Firefox + Cursor
 
-A clean, repeatable setup for the **NVIDIA Jetson Orin Nano Super Developer Kit**, optimized for:
-
-- Maximum performance mode
-- Remote access (VNC) using **TigerVNC** (virtual desktop; works great headless)
-- Development readiness (SSH, useful tools)
-- A “restore point” snapshot
-
-> This guide intentionally uses **TigerVNC** instead of x11vnc. TigerVNC runs a dedicated virtual desktop at a fixed resolution, so you don’t need a monitor (or a dummy plug) to get a large remote screen.
+This guide captures the **working** setup and the fixes discovered during troubleshooting:
+- XFCE desktop
+- **Persistent TigerVNC** that survives logout/reboot
+- **Firefox via Flatpak** (Snap is broken on this kernel)
+- Cursor installed and runnable, with login troubleshooting
 
 ---
 
-## References
-
-- NVIDIA JetPack Documentation: https://docs.nvidia.com/jetson/jetpack/introduction/index.html  
-- balenaEtcher (SD card flashing tool): https://etcher.balena.io/  
-- JetPack 6.2.2 download: https://developer.nvidia.com/embedded/jetpack-sdk-622  
-
----
-
-## Hardware Used (Required)
-
-- NVIDIA Jetson Orin Nano Super Developer Kit: https://amzn.to/4kkrEpl  
-- microSD Card (**256GB recommended**): https://amzn.to/3MeFRr2  
-- DisplayPort to HDMI Adapter: https://amzn.to/4rxEpPs  
-- HDMI Monitor (for initial setup only)  
-- USB Keyboard  
-- USB Mouse  
-
----
-
-## Step 1 — Flash JetPack Image to SD Card
-
-1. Download **JetPack 6.2.2**.
-2. Download and install **balenaEtcher**.
-3. Insert the microSD card into your computer.
-4. Open balenaEtcher:
-   - Select the JetPack image
-   - Select the SD card as target
-   - Click **Flash**
-5. Wait for flashing + validation to complete.
-6. Remove the SD card.
-
----
-
-## Step 2 — First Boot and Initial Setup
-
-1. Insert the SD card into the Jetson Orin Nano.
-2. Connect:
-   - Monitor
-   - Keyboard
-   - Mouse
-3. Connect the power supply and power on the Jetson.
-4. Follow the setup wizard:
-   - Create your user
-   - Connect to Wi‑Fi
-   - **Do NOT install Chromium when prompted** (we’ll fix it later)
-
----
-
-## Step 3 — Connect via SSH
-
-1. On the Jetson desktop:
-   - **Settings → Wi‑Fi →** note the IP address
-2. From your computer (same network):
+## 1) Baseline: Confirm platform
 
 ```bash
-ssh <username>@<ip-address>
+uname -a
+lsb_release -a || cat /etc/os-release
 ```
 
 ---
 
-## Step 4 — Update the System + Tools
+## 2) Install XFCE + LightDM (if not already)
 
 ```bash
 sudo apt update
-sudo apt -y upgrade
-sudo apt install -y nano ufw zip unzip
-```
-
----
-
-## Step 5 — Enable Maximum Performance Mode
-
-Check available power modes:
-
-```bash
-sudo nvpmodel -q --verbose
-```
-
-Set highest performance mode (commonly mode `2`):
-
-```bash
-sudo nvpmodel -m 2
-```
-
-Verify:
-
-```bash
-sudo nvpmodel -q
-```
-
----
-
-## Step 6 — Fix Chromium (Snap Downgrade)
-
-Chromium requires an older `snapd` version.
-
-```bash
-sudo snap download snapd --revision=24724
-sudo snap ack snapd_24724.assert
-sudo snap install snapd_24724.snap
-sudo snap refresh --hold snapd
-sudo reboot
-```
-
-After reboot:
-
-```bash
-sudo snap install chromium
-```
-
----
-
-## Step 7 — Switch Desktop from GNOME to XFCE
-
-XFCE is lighter, faster, and works well for remote desktop.
-
-### Install XFCE + LightDM
-
-```bash
 sudo apt install -y xfce4 xfce4-goodies lightdm
-sudo dpkg-reconfigure lightdm
-sudo reboot
 ```
 
-### Select XFCE Session
-
-At the login screen:
-- Click the session icon (gear)
-- Choose **Xfce Session**
-- Log in
-
-### Remove GNOME (only after confirming XFCE works)
+Set LightDM as default display manager:
 
 ```bash
-sudo apt purge -y ubuntu-desktop gnome-shell gdm3
-sudo apt autoremove -y
-sudo apt autoclean -y
 sudo dpkg-reconfigure lightdm
+```
+
+Reboot:
+
+```bash
+sudo reboot
 ```
 
 ---
 
-## Step 8 — Install and Configure VNC (TigerVNC)
-
-TigerVNC provides a dedicated virtual desktop session at a fixed resolution (recommended for headless use).
-
-### 8.1 Install TigerVNC
+## 3) Install TigerVNC server
 
 ```bash
 sudo apt update
 sudo apt install -y tigervnc-standalone-server tigervnc-common
 ```
 
-### 8.2 Set your VNC password (run as your normal user)
+---
+
+## 4) Configure TigerVNC session to launch XFCE
+
+Create the VNC startup script (user: luna):
+
+```bash
+mkdir -p /home/luna/.vnc
+cat <<'EOF' > /home/luna/.vnc/xstartup
+#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+exec startxfce4
+EOF
+chmod +x /home/luna/.vnc/xstartup
+```
+
+Optional: set VNC config (recommended for remote access):
+
+```bash
+cat <<'EOF' > /home/luna/.vnc/config
+localhost=no
+EOF
+```
+
+Set the VNC password (required by many VNC viewers):
 
 ```bash
 vncpasswd
 ```
 
-### 8.3 Configure VNC to start XFCE
+---
 
-Create `~/.vnc/xstartup` (known-good, won’t exit early):
+## 5) Make TigerVNC persistent via systemd (survives logout)
+
+### 5.1 Map display to user
 
 ```bash
-mkdir -p ~/.vnc
-cat > ~/.vnc/xstartup <<'EOF'
-#!/bin/sh
-# Ignore missing Xresources (common on minimal installs)
-xrdb "$HOME/.Xresources" 2>/dev/null || true
-
-# Start XFCE session for the VNC desktop
-startxfce4
-EOF
-chmod +x ~/.vnc/xstartup
+sudo mkdir -p /etc/tigervnc
+printf '%s\n' ':1=luna' | sudo tee /etc/tigervnc/vncserver.users >/dev/null
 ```
 
-### 8.4 Start TigerVNC (choose your resolution)
+### 5.2 Fix systemd SELinuxContext failure (Jetson typically has no SELinux)
 
-Example (recommended for large monitors):
+TigerVNC unit includes an SELinuxContext line that can break service start on Jetson.
+Create a systemd override to remove it:
 
 ```bash
-vncserver :1 -geometry 2560x1440 -localhost no
+sudo systemctl edit tigervncserver@.service
 ```
 
-Connect your VNC client to:
-- `JETSON_IP:5901` (display `:1` → port `5900 + 1`)
+Paste:
 
-To stop:
-
-```bash
-vncserver -kill :1
-```
-
-### 8.5 Auto-start TigerVNC at boot (systemd user service)
-
-Create the service:
-
-```bash
-mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/vncserver@:1.service <<'EOF'
-[Unit]
-Description=TigerVNC server on display %i
-After=network.target
-
+```ini
 [Service]
-Type=forking
-ExecStart=/usr/bin/vncserver %i -geometry 2560x1440 -localhost no
-ExecStop=/usr/bin/vncserver -kill %i
-Restart=on-failure
-RestartSec=2
+SELinuxContext=
+```
 
-[Install]
-WantedBy=default.target
+Reload systemd:
+
+```bash
+sudo systemctl daemon-reload
+```
+
+### 5.3 Start and enable the correct instance
+
+Use **@:1** format (this matters):
+
+```bash
+sudo systemctl enable --now tigervncserver@:1.service
+```
+
+Verify:
+
+```bash
+systemctl status tigervncserver@:1.service --no-pager -l
+sudo ss -ltnp | egrep ":5901" || true
+```
+
+Expected: `0.0.0.0:5901` or `127.0.0.1:5901` depending on config.
+
+---
+
+## 6) Connecting to VNC
+
+### Option A (recommended): SSH tunnel + local-only VNC
+If you keep VNC bound to localhost, tunnel it:
+
+On your laptop/desktop:
+
+```bash
+ssh -L 5901:127.0.0.1:5901 luna@<JETSON_IP>
+```
+
+Then in your VNC viewer connect to:
+
+- `127.0.0.1:5901`
+
+### Option B: Direct remote VNC
+If you set `localhost=no` in `~/.vnc/config`, connect directly to:
+
+- `<JETSON_IP>:5901`
+
+---
+
+## 7) Browser: Snap is NOT supported (use Flatpak Firefox)
+
+### Why
+On this Jetson kernel, Snap frequently fails with SquashFS mount errors like:
+- `wrong fs type, bad superblock on /dev/loop0`
+- snap mounts failing for chromium/firefox
+
+Do **not** use Snap for browsers on this setup.
+
+### Install Flatpak + Firefox (user-scoped)
+
+```bash
+sudo apt update
+sudo apt install -y flatpak
+flatpak --user remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak install --user -y flathub org.mozilla.firefox
+```
+
+Run:
+
+```bash
+flatpak run --user org.mozilla.firefox
+```
+
+---
+
+## 8) Desktop shortcut for Flatpak Firefox (so it appears in XFCE)
+
+Sometimes icons do not appear until you add XDG paths and restart session.
+
+### 8.1 Export Flatpak desktop entries to XFCE menus
+Create `~/.profile` entries (safe on XFCE):
+
+```bash
+grep -q 'flatpak/exports/share' ~/.profile || cat <<'EOF' >> ~/.profile
+
+# Flatpak user exports for desktop entries/icons
+export XDG_DATA_DIRS="$HOME/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 EOF
 ```
 
-Enable it and allow it to run after reboot:
+Log out/in (or reboot).
 
+### 8.2 Optional: create desktop launcher explicitly
 ```bash
-systemctl --user daemon-reload
-systemctl --user enable --now vncserver@:1.service
-sudo loginctl enable-linger $USER
-```
-
-### 8.6 Firewall
-
-```bash
-sudo ufw allow 5901/tcp
-sudo ufw status
-```
-
-> Security note: If possible, prefer an SSH tunnel instead of opening VNC ports. (See TROUBLESHOOT.md.)
-
----
-
-## Step 9 — Take a System Snapshot (Recommended)
-
-Before continuing development, create a restore point:
-
-```bash
-sudo apt install -y timeshift
-sudo timeshift --create --comments "Base-Clean-Setup"
+mkdir -p ~/Desktop
+cat <<'EOF' > ~/Desktop/Firefox.desktop
+[Desktop Entry]
+Type=Application
+Name=Firefox (Flatpak)
+Exec=flatpak run --user org.mozilla.firefox
+Icon=org.mozilla.firefox
+Terminal=false
+Categories=Network;WebBrowser;
+EOF
+chmod +x ~/Desktop/Firefox.desktop
 ```
 
 ---
 
-## Result
+## 9) Cursor
 
-You now have:
+### 9.1 Verify install
+Depending on how you installed Cursor, verify binary exists:
 
-- JetPack 6.2.2 installed
-- Maximum performance mode enabled
-- XFCE lightweight desktop
-- Reliable headless VNC access (TigerVNC)
-- Chromium working
-- Snapshot backup ready
+```bash
+command -v cursor || true
+which cursor || true
+```
+
+If Cursor is a snap: **avoid snap** (same reasons as browsers). Prefer a .deb/AppImage if available.
+
+### 9.2 Cursor login button does nothing (common)
+Fix path:
+1) Ensure Firefox opens (Flatpak)
+2) Open Cursor from a clean VNC session (after reboot/login)
+3) Try login again
+4) If still stuck, launch Cursor from terminal and capture logs:
+
+```bash
+cursor --verbose 2>&1 | tee ~/cursor-login.log
+```
 
 ---
 
-## Troubleshooting
+## 10) Notes on warnings you may see
 
-See `TROUBLESHOOT.md`.
+### 10.1 “System policy prevents Wi-Fi scans”
+Expected in headless/VNC sessions. Harmless. Wi-Fi generally still works.
+
+### 10.2 polkit agent “already exists”
+Harmless. Happens when multiple sessions try to register an auth agent inside VNC.
+
+---
+
+## 11) Quick health checks (copy/paste)
+
+```bash
+# VNC service health
+systemctl is-active tigervncserver@:1.service
+systemctl status tigervncserver@:1.service --no-pager -l
+
+# VNC port listening
+sudo ss -ltnp | egrep ":5901" || true
+
+# Flatpak Firefox installed
+flatpak --user list | grep -i firefox || true
+```
+
+---
+
+## 12) Reboot-safe workflow
+
+- Reboot Jetson
+- Connect VNC to :1 (port 5901)
+- Launch Firefox via Flatpak
+- Launch Cursor
+- Do NOT rely on Snap for GUI apps
