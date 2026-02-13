@@ -1,201 +1,189 @@
-# Troubleshooting — Jetson Orin Nano Clean Setup (JetPack 6.2.2)
-
-This file covers common problems when setting up **SSH**, **Chromium**, **XFCE**, and **VNC (TigerVNC)**.
+# TROUBLESHOOT — Jetson Orin Nano Super (JetPack 6.x) XFCE + VNC + Firefox + Cursor
 
 ---
 
-## SSH Issues
+## 1) VNC works after reboot, but dies after logout
 
-### "Connection timed out" / "No route to host"
+**Symptoms**
+- VNC connects after reboot
+- Logging out causes “server refused connection”
+- You must reboot to recover
 
-- Confirm the Jetson IP address:
+**Root cause**
+- VNC was tied to an interactive user session instead of a system-managed service
+
+**Fix**
+Use systemd-managed TigerVNC instance `@:1`.
 
 ```bash
-hostname -I
-ip a
+sudo systemctl enable --now tigervncserver@:1.service
+systemctl status tigervncserver@:1.service --no-pager -l
+sudo ss -ltnp | egrep ":5901" || true
 ```
 
-- Confirm SSH server is installed and running:
+If the port is only on localhost and you need remote access:
+- set `localhost=no` in `~/.vnc/config`
+- restart service
+
+```bash
+echo "localhost=no" > ~/.vnc/config
+sudo systemctl restart tigervncserver@:1.service
+sudo ss -ltnp | egrep ":5901" || true
+```
+
+---
+
+## 2) TigerVNC service fails with SELINUX_CONTEXT
+
+**Symptoms**
+- `Failed at step SELINUX_CONTEXT`
+- `Operation not permitted`
+
+**Root cause**
+- Unit file contains `SELinuxContext=...` but Jetson typically has no SELinux
+
+**Fix**
+Remove SELinuxContext with a systemd override:
+
+```bash
+sudo systemctl edit tigervncserver@.service
+```
+
+Add:
+
+```ini
+[Service]
+SELinuxContext=
+```
+
+Reload + restart:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart tigervncserver@:1.service
+```
+
+---
+
+## 3) TigerVNC says “No user configured for display 1”
+
+**Symptoms**
+- `No user configured for display 1`
+
+**Root cause**
+- Missing or wrong `/etc/tigervnc/vncserver.users` mapping
+
+**Fix**
+For `tigervncserver@:1.service`, the mapping must be `:1=luna`
+
+```bash
+sudo mkdir -p /etc/tigervnc
+printf '%s\n' ':1=luna' | sudo tee /etc/tigervnc/vncserver.users >/dev/null
+sudo systemctl restart tigervncserver@:1.service
+```
+
+---
+
+## 4) Snap apps (chromium/firefox/cursor) fail or won’t mount
+
+**Symptoms**
+- `wrong fs type, bad superblock on /dev/loop0`
+- snap mount unit fails
+- `system does not fully support snapd: cannot mount squashfs`
+- apps complain about snap cgroups
+
+**Root cause**
+- SquashFS is not available/loaded/supported for snap mounts on this kernel
+
+**Fix**
+Stop using snap for GUI apps. Use Flatpak for browser. Use .deb/AppImage for editor if possible.
+
+### Flatpak Firefox (works)
 
 ```bash
 sudo apt update
-sudo apt install -y openssh-server
-sudo systemctl enable --now ssh
-sudo systemctl status ssh --no-pager
-```
-
-- Confirm port 22 is listening:
-
-```bash
-sudo ss -tulpn | grep :22
+sudo apt install -y flatpak
+flatpak --user remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak install --user -y flathub org.mozilla.firefox
+flatpak run --user org.mozilla.firefox
 ```
 
 ---
 
-## Performance Mode (nvpmodel)
+## 5) Firefox runs but no desktop icon appears
 
-### "nvpmodel: command not found"
+**Symptoms**
+- Firefox runs from terminal
+- No menu entry or desktop icon
 
-JetPack should include it, but if missing:
-
-```bash
-sudo apt update
-sudo apt install -y nvpmodel
-```
-
-If that package doesn’t exist, your JetPack install may be incomplete.
-
----
-
-## Chromium / Snap Issues
-
-### Chromium still won’t install
-
-- Confirm snapd is held:
+**Fix**
+Add Flatpak exports to `XDG_DATA_DIRS`, then relogin.
 
 ```bash
-snap list | grep snapd
-sudo snap refresh --time
-```
+grep -q 'flatpak/exports/share' ~/.profile || cat <<'EOF' >> ~/.profile
 
-- Retry install:
-
-```bash
-sudo snap install chromium
-```
-
----
-
-## XFCE / Login Issues
-
-### XFCE option not visible at login
-
-Ensure LightDM is selected:
-
-```bash
-sudo dpkg-reconfigure lightdm
-sudo reboot
-```
-
----
-
-## TigerVNC Issues
-
-### VNC starts then immediately stops / connection refused
-
-If your VNC client says "refused" but you can SSH, the VNC server likely started and then exited. This is commonly caused by `~/.vnc/xstartup` exiting too early.
-
-If the server stays running but you only see a gray/blank desktop, it’s still usually an `xstartup` issue—apply the `xstartup` fix below and restart the server.
-
-1) Check the log:
-
-```bash
-ls -la ~/.vnc
-# replace host/port in filename as needed
-tail -n 200 ~/.vnc/*.log
-```
-
-2) Install required packages (usually already installed, but safe):
-
-```bash
-sudo apt install -y dbus-x11 xfce4 xfce4-goodies
-```
-
-3) Use this known-good `~/.vnc/xstartup`:
-
-```bash
-cat > ~/.vnc/xstartup <<'EOF'
-#!/bin/sh
-xrdb "$HOME/.Xresources" 2>/dev/null || true
-startxfce4
+export XDG_DATA_DIRS="$HOME/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 EOF
-chmod +x ~/.vnc/xstartup
 ```
 
-4) Restart the server cleanly:
+Create a desktop shortcut:
 
 ```bash
-vncserver -kill :1 || true
-vncserver :1 -geometry 2560x1440 -localhost no
+mkdir -p ~/Desktop
+cat <<'EOF' > ~/Desktop/Firefox.desktop
+[Desktop Entry]
+Type=Application
+Name=Firefox (Flatpak)
+Exec=flatpak run --user org.mozilla.firefox
+Icon=org.mozilla.firefox
+Terminal=false
+Categories=Network;WebBrowser;
+EOF
+chmod +x ~/Desktop/Firefox.desktop
 ```
-
-### Can’t connect to 5901
-
-- Confirm TigerVNC is running:
-
-```bash
-vncserver -list
-```
-
-- Confirm the port is listening:
-
-```bash
-sudo ss -tulpn | grep :5901
-```
-
-- Confirm firewall:
-
-```bash
-sudo ufw status
-sudo ufw allow 5901/tcp
-```
-
-### TigerVNC starts, but you want a different resolution
-
-Stop it and restart with a different geometry:
-
-```bash
-vncserver -kill :1
-vncserver :1 -geometry 1920x1080 -localhost no
-```
-
-### systemd user service doesn’t start on boot
-
-1) Enable lingering:
-
-```bash
-sudo loginctl enable-linger $USER
-```
-
-2) Check service status:
-
-```bash
-systemctl --user status vncserver@:1.service --no-pager
-journalctl --user -u vncserver@:1.service -n 200 --no-pager
-```
-
-### Security: Avoid exposing VNC to the internet
-
-Best practice is to keep VNC bound to localhost and use an SSH tunnel:
-
-On the Jetson, start VNC with localhost only:
-
-```bash
-vncserver :1 -geometry 2560x1440 -localhost yes
-```
-
-On your Mac, tunnel it:
-
-```bash
-ssh -L 5901:localhost:5901 <username>@<jetson-ip>
-```
-
-Then connect your VNC client to:
-- `localhost:5901`
 
 ---
 
-## Diagnostics (useful output to paste when asking for help)
+## 6) XFCE Terminal won’t open, and you are on SSH
+
+**Symptoms**
+- `Gtk-WARNING: cannot open display`
+- commands fail because you are not on a GUI session
+
+**Explanation**
+From SSH, you cannot launch GUI apps unless you export DISPLAY and have X authority. Prefer running GUI apps inside VNC, not via SSH.
+
+---
+
+## 7) “System policy prevents Wi‑Fi scans” popup
+
+**Status**
+Expected in headless/VNC sessions.
+
+**Fix**
+None required. If Wi‑Fi is functioning, ignore it.
+
+---
+
+## 8) polkit agent “already exists”
+
+**Status**
+Harmless. Caused by multiple sessions registering polkit agent.
+
+**Fix**
+None required unless you see repeated password prompts or blocked admin actions.
+
+---
+
+## 9) Quick log commands
 
 ```bash
-uname -a
-lsb_release -a || cat /etc/os-release
-hostname -I
-sudo systemctl status ssh --no-pager
-vncserver -list
-systemctl --user status vncserver@:1.service --no-pager
-sudo ss -tulpn | egrep ':22|:5901' || true
-sudo nvpmodel -q --verbose
-aplay -l
-arecord -l
+# VNC logs
+journalctl -xeu tigervncserver@:1.service --no-pager | tail -n 200
+
+# Display manager logs
+sudo tail -n 200 /var/log/lightdm/lightdm.log
+
+# Auth logs
+sudo egrep -i "lightdm|pam|authentication failure|Failed" /var/log/auth.log | tail -n 120
 ```
